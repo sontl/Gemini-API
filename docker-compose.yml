@@ -1,0 +1,25 @@
+services:
+  gemini-api:
+    build: .
+    container_name: gemini-image-api
+    ports:
+      - "8000:8000"
+    environment:
+      SECURE_1PSID: ${SECURE_1PSID}
+      SECURE_1PSIDTS: ${SECURE_1PSIDTS:-}
+      GEMINI_PROXY: ${GEMINI_PROXY:-}
+      GEMINI_AUTO_REFRESH: ${GEMINI_AUTO_REFRESH:-true}
+      GEMINI_REFRESH_INTERVAL: ${GEMINI_REFRESH_INTERVAL:-540}
+      GEMINI_TIMEOUT: ${GEMINI_TIMEOUT:-300}
+      GEMINI_AUTO_CLOSE: ${GEMINI_AUTO_CLOSE:-false}
+      GEMINI_CLOSE_DELAY: ${GEMINI_CLOSE_DELAY:-300}
+      GEMINI_COOKIE_PATH: /data/cookies
+      GEMINI_IMAGE_OUTPUT_DIR: /data/outputs
+    volumes:
+      - gemini_cookies:/data/cookies
+      - gemini_outputs:/data/outputs
+    restart: unless-stopped
+
+volumes:
+  gemini_cookies:
+  gemini_outputs:

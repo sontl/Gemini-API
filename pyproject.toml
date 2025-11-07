@@ -24,6 +24,8 @@ dependencies = [
     "loguru~=0.7.3",
     "orjson~=3.11.1",
     "pydantic~=2.12.2",
+    "fastapi~=0.115.4",
+    "uvicorn[standard]~=0.32.0",
 ]
 dynamic = ["version"]
 
@@ -33,7 +35,7 @@ Issues = "https://github.com/HanaokaYuzu/Gemini-API/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["gemini_webapi"]
+include = ["gemini_webapi", "gemini_webapi.*"]
 
 [tool.setuptools_scm]
 version_scheme = "post-release"
