@@ -25,6 +25,7 @@ class AppConfig:
     secure_1psidts: str | None
     proxy: str | None
     image_output_dir: str
+    image_base_url: str | None
     timeout: float
     auto_close: bool
     close_delay: float
@@ -41,6 +42,7 @@ class AppConfig:
         secure_ts = env.get("SECURE_1PSIDTS") or None
         proxy = env.get("GEMINI_PROXY") or None
         output_dir = env.get("GEMINI_IMAGE_OUTPUT_DIR", "/data/outputs")
+        base_url = env.get("GEMINI_IMAGE_BASE_URL")
         timeout = _parse_float(env.get("GEMINI_TIMEOUT"), 300)
         auto_close = _parse_bool(env.get("GEMINI_AUTO_CLOSE"), False)
         close_delay = _parse_float(env.get("GEMINI_CLOSE_DELAY"), 300)
@@ -52,6 +54,7 @@ class AppConfig:
             secure_1psidts=secure_ts,
             proxy=proxy,
             image_output_dir=output_dir,
+            image_base_url=base_url,
             timeout=timeout,
             auto_close=auto_close,
             close_delay=close_delay,

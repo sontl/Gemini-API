@@ -22,6 +22,7 @@ class StubService:
                     mime_type="image/png",
                     data="ZGF0YQ==",
                     path="/tmp/image.png",
+                    url="http://localhost/images/image.png",
                 )
             ],
         )

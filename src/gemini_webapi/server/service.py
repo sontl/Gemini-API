@@ -147,10 +147,12 @@ class ImageEditingService:
         client: GeminiClient,
         store: SessionStore,
         output_dir: str,
+        base_url: str | None,
     ) -> None:
         self._client = client
         self._store = store
         self._output_dir = Path(output_dir)
+        self._base_url = base_url.rstrip("/") if base_url else None
 
     async def start_session(
         self,
@@ -228,6 +230,25 @@ class ImageEditingService:
             proxy=self._client.proxy,
             output_dir=self._output_dir,
         )
+
+        if self._base_url:
+            for image in images:
+                absolute_path = Path(image.path)
+                try:
+                    relative = absolute_path.relative_to(self._output_dir)
+                except ValueError:
+                    image.url = f"{self._base_url}/{absolute_path.name}"
+                else:
+                    image.url = f"{self._base_url}/{relative.as_posix()}"
+        else:
+            for image in images:
+                absolute_path = Path(image.path)
+                try:
+                    relative = absolute_path.relative_to(self._output_dir)
+                except ValueError:
+                    image.url = f"/images/{absolute_path.name}"
+                else:
+                    image.url = f"/images/{relative.as_posix()}"
 
         return ConversationResponse(
             session_id=session_id or self._generate_session_id(),

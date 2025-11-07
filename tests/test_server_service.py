@@ -1,5 +1,6 @@
 import asyncio
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import pytest
 
@@ -47,7 +48,9 @@ def patch_helpers(monkeypatch, tmp_path):
         yield ["/tmp/fake.png" for _ in urls]
 
     async def fake_serialize(images, proxy=None, output_dir=None):  # noqa: ARG001
-        path = tmp_path / "image.png"
+        target_dir = Path(output_dir) if output_dir else tmp_path
+        target_dir.mkdir(parents=True, exist_ok=True)
+        path = target_dir / "image.png"
         path.write_bytes(b"data")
         return [
             ImagePayload(
@@ -56,6 +59,7 @@ def patch_helpers(monkeypatch, tmp_path):
                 mime_type="image/png",
                 data="ZGF0YQ==",
                 path=str(path),
+                url="http://localhost/images/image.png",
             )
             for image in images
         ]
@@ -94,15 +98,27 @@ def test_start_session_creates_store_entry():
     output = make_output("Edited image", ["cid1", "rid1", "rcid1"], with_image=True)
     client = DummyClient([output])
     store = SessionStore()
-    service = ImageEditingService(client, store, output_dir="/tmp")
+    service = ImageEditingService(client, store, output_dir="/tmp", base_url="http://localhost/images")
 
     response = asyncio.run(service.start_session("prompt", image_urls=["https://example.com/image.png"]))
 
     assert isinstance(response, ConversationResponse)
     assert response.text == "Edited image"
     assert response.images[0].path
+    assert response.images[0].url
     stored = asyncio.run(store.get(response.session_id))
     assert stored.metadata == ["cid1", "rid1", "rcid1"]
+
+
+def test_start_session_generates_relative_url(tmp_path):
+    output = make_output("Edited image", ["cid1", "rid1", "rcid1"], with_image=True)
+    client = DummyClient([output])
+    store = SessionStore()
+    service = ImageEditingService(client, store, output_dir=str(tmp_path), base_url=None)
+
+    response = asyncio.run(service.start_session("prompt", image_urls=[]))
+
+    assert response.images[0].url.startswith("/images/")
 
 
 def test_continue_session_updates_metadata():
@@ -110,7 +126,7 @@ def test_continue_session_updates_metadata():
     second_output = make_output("Second", ["cid2", "rid2", "rcid2"])
     client = DummyClient([first_output, second_output])
     store = SessionStore()
-    service = ImageEditingService(client, store, output_dir="/tmp")
+    service = ImageEditingService(client, store, output_dir="/tmp", base_url="http://localhost/images")
 
     first_response = asyncio.run(service.start_session("prompt", image_urls=[]))
 
@@ -126,7 +142,7 @@ def test_continue_session_updates_metadata():
 def test_continue_session_missing(monkeypatch):
     client = DummyClient([make_output("text", ["cid", "rid", "rcid"])])
     store = SessionStore()
-    service = ImageEditingService(client, store, output_dir="/tmp")
+    service = ImageEditingService(client, store, output_dir="/tmp", base_url="http://localhost/images")
 
     with pytest.raises(SessionNotFoundError):
         asyncio.run(service.continue_session("missing", prompt="p", image_urls=[]))
@@ -135,7 +151,7 @@ def test_continue_session_missing(monkeypatch):
 def test_invalid_model_raises_error():
     client = DummyClient([make_output("text", ["cid", "rid", "rcid"])])
     store = SessionStore()
-    service = ImageEditingService(client, store, output_dir="/tmp")
+    service = ImageEditingService(client, store, output_dir="/tmp", base_url="http://localhost/images")
 
     with pytest.raises(InvalidModelError):
         asyncio.run(service.start_session("prompt", image_urls=[], model="invalid-model"))

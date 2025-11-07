@@ -19,6 +19,7 @@ GEMINI_REFRESH_INTERVAL=540
 GEMINI_TIMEOUT=300
 GEMINI_AUTO_CLOSE=false
 GEMINI_CLOSE_DELAY=300
+GEMINI_IMAGE_BASE_URL=http://localhost:8000/images
 # GEMINI_PROXY=http://proxy:8080
 ```
 
@@ -59,6 +60,8 @@ curl -X POST http://localhost:8000/sessions/<SESSION_ID>/messages \
         "prompt": "Make the colors warmer"
       }'
 ```
+
+Images are saved inside the container under `/data/outputs` and exposed via HTTP. If `GEMINI_IMAGE_BASE_URL` is unset, responses include relative URLs like `/images/<file>` that map to `http://localhost:8000/images/<file>` by default.
 
 ## Shutdown
 

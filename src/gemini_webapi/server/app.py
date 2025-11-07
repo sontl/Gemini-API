@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from httpx import HTTPError
 
 from ..client import GeminiClient
@@ -104,7 +105,12 @@ def create_app(service: ImageEditingService | None = None) -> FastAPI:
             client,
             store,
             output_dir=config.image_output_dir,
+            base_url=config.image_base_url,
         )
+
+        if config.image_base_url is None:
+            directory = config.image_output_dir
+            app.mount("/images", StaticFiles(directory=directory, html=False), name="images")
 
     @app.on_event("shutdown")
     async def on_shutdown() -> None:

@@ -23,6 +23,7 @@ class ImagePayload(BaseModel):
     mime_type: str
     data: str
     path: str
+    url: str | None = None
 
 
 class ConversationResponse(BaseModel):
