@@ -43,26 +43,27 @@ class Headers(Enum):
 
 class Model(Enum):
     UNSPECIFIED = ("unspecified", {}, False)
-    G_2_5_FLASH = (
-        "gemini-2.5-flash",
-        {"x-goog-ext-525001261-jspb": '[1,null,null,null,"71c2d248d3b102ff",null,null,0,[4]]'},
+    G_3_0_PRO = (
+        "gemini-3.0-pro",
+        {
+            "x-goog-ext-525001261-jspb": '[1,null,null,null,"9d8ca3786ebdfbea",null,null,0,[4]]'
+        },
         False,
     )
     G_2_5_PRO = (
         "gemini-2.5-pro",
-        {"x-goog-ext-525001261-jspb": '[1,null,null,null,"4af6c7f5da75d65d",null,null,0,[4]]'},
+        {
+            "x-goog-ext-525001261-jspb": '[1,null,null,null,"4af6c7f5da75d65d",null,null,0,[4]]'
+        },
         False,
     )
-    G_2_0_FLASH = (
-        "gemini-2.0-flash",
-        {"x-goog-ext-525001261-jspb": '[1,null,null,null,"f299729663a2343f"]'},
+    G_2_5_FLASH = (
+        "gemini-2.5-flash",
+        {
+            "x-goog-ext-525001261-jspb": '[1,null,null,null,"9ec249fc9ad08861",null,null,0,[4]]'
+        },
         False,
-    )  # Deprecated
-    G_2_0_FLASH_THINKING = (
-        "gemini-2.0-flash-thinking",
-        {"x-goog-ext-525001261-jspb": '[null,null,null,null,"7ca48d02d802f20a"]'},
-        False,
-    )  # Deprecated
+    )
 
     def __init__(self, name, header, advanced_only):
         self.model_name = name
@@ -74,9 +75,27 @@ class Model(Enum):
         for model in cls:
             if model.model_name == name:
                 return model
+
         raise ValueError(
             f"Unknown model name: {name}. Available models: {', '.join([model.model_name for model in cls])}"
         )
+
+    @classmethod
+    def from_dict(cls, model_dict: dict):
+        if "model_name" not in model_dict or "model_header" not in model_dict:
+            raise ValueError(
+                "When passing a custom model as a dictionary, 'model_name' and 'model_header' keys must be provided."
+            )
+
+        if not isinstance(model_dict["model_header"], dict):
+            raise ValueError(
+                "When passing a custom model as a dictionary, 'model_header' must be a dictionary containing valid header strings."
+            )
+
+        custom_model = cls.UNSPECIFIED
+        custom_model.model_name = model_dict["model_name"]
+        custom_model.model_header = model_dict["model_header"]
+        return custom_model
 
 
 class ErrorCode(IntEnum):
