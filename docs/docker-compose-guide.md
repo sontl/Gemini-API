@@ -63,6 +63,82 @@ curl -X POST http://localhost:8000/sessions/<SESSION_ID>/messages \
 
 Images are saved inside the container under `/data/outputs` and exposed via HTTP. If `GEMINI_IMAGE_BASE_URL` is unset, responses include relative URLs like `/images/<file>` that map to `http://localhost:8000/images/<file>` by default.
 
+## Async Webhook Pattern (for Long-Running Requests)
+
+For requests that may take 1-5 minutes to complete (which can cause timeouts when served through proxies like Cloudflare), use the async webhook endpoints:
+
+### Start Async Session
+
+```bash
+curl -X POST http://localhost:8000/sessions/async \
+  -H "Content-Type: application/json" \
+  -d '{
+        "prompt": "Apply a watercolor style",
+        "image_urls": ["https://sgl.com.vn/wp-content/uploads/2023/12/kien-truc-nha-xua-02.jpg"],
+        "model": "gemini-2.5-flash",
+        "webhook_url": "https://your-server.com/webhook"
+      }'
+```
+
+**Response (202 Accepted):**
+```json
+{
+  "task_id": "abc123xyz",
+  "status": "pending",
+  "message": "Task created successfully. Result will be sent to webhook URL."
+}
+```
+
+### Check Task Status (Optional)
+
+```bash
+curl http://localhost:8000/tasks/abc123xyz
+```
+
+**Response:**
+```json
+{
+  "task_id": "abc123xyz",
+  "status": "processing",
+  "result": null,
+  "error": null,
+  "created_at": "2025-12-16T09:48:00",
+  "updated_at": "2025-12-16T09:48:05"
+}
+```
+
+### Webhook Callback
+
+When processing completes, your webhook endpoint will receive a POST request:
+
+**On Success:**
+```json
+{
+  "task_id": "abc123xyz",
+  "status": "completed",
+  "result": {
+    "session_id": "...",
+    "text": "...",
+    "images": [...],
+    "metadata": [...],
+    "thoughts": null
+  }
+}
+```
+
+**On Failure:**
+```json
+{
+  "task_id": "abc123xyz",
+  "status": "failed",
+  "error": "Error message describing what went wrong"
+}
+```
+
+> [!NOTE]
+>
+> The webhook is called with up to 3 retry attempts using exponential backoff (2s, 4s, 8s delays). Make sure your webhook endpoint can handle POST requests with JSON payloads.
+
 ## Shutdown
 
 ```bash

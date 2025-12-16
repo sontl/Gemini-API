@@ -102,3 +102,69 @@ def test_continue_session_success():
     response = client.post("/sessions/xyz/messages", json={"prompt": "next"})
     assert response.status_code == 200
     assert service.continued_payload["session_id"] == "xyz"
+
+
+def test_start_session_async_returns_task_id():
+    """Test that /sessions/async returns 202 with task_id immediately."""
+    service = StubService()
+    app = create_app(service=service)
+    client = TestClient(app)
+
+    payload = {
+        "prompt": "edit async",
+        "image_urls": ["https://example.com/a.png"],
+        "webhook_url": "https://example.com/webhook",
+    }
+    response = client.post("/sessions/async", json=payload)
+
+    assert response.status_code == 202
+    data = response.json()
+    assert "task_id" in data
+    assert data["status"] == "pending"
+    assert "message" in data
+
+
+def test_start_session_async_missing_webhook():
+    """Test that /sessions/async requires webhook_url."""
+    service = StubService()
+    app = create_app(service=service)
+    client = TestClient(app)
+
+    payload = {"prompt": "edit async"}  # Missing webhook_url
+    response = client.post("/sessions/async", json=payload)
+
+    assert response.status_code == 422  # Validation error
+
+
+def test_get_task_status_not_found():
+    """Test that /tasks/{task_id} returns 404 for unknown task."""
+    service = StubService()
+    app = create_app(service=service)
+    client = TestClient(app)
+
+    response = client.get("/tasks/unknown-task-id")
+    assert response.status_code == 404
+
+
+def test_get_task_status_after_async_start():
+    """Test that task status is retrievable after async start."""
+    service = StubService()
+    app = create_app(service=service)
+    client = TestClient(app)
+
+    # Start async session
+    payload = {
+        "prompt": "edit async",
+        "webhook_url": "https://example.com/webhook",
+    }
+    response = client.post("/sessions/async", json=payload)
+    assert response.status_code == 202
+    task_id = response.json()["task_id"]
+
+    # Check task status
+    status_response = client.get(f"/tasks/{task_id}")
+    assert status_response.status_code == 200
+    status_data = status_response.json()
+    assert status_data["task_id"] == task_id
+    assert status_data["status"] in ["pending", "processing", "completed"]
+

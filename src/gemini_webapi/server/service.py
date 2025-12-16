@@ -68,6 +68,56 @@ class SessionStore:
             stored.updated_at = datetime.utcnow()
 
 
+class TaskNotFoundError(KeyError):
+    pass
+
+
+@dataclass
+class TaskData:
+    """Data for tracking async background tasks."""
+    status: str  # "pending", "processing", "completed", "failed"
+    request: dict  # Original request parameters
+    webhook_url: str
+    result: Any = None
+    error: str | None = None
+    created_at: datetime = field(default_factory=datetime.utcnow)
+    updated_at: datetime = field(default_factory=datetime.utcnow)
+
+
+class TaskStore:
+    """In-memory store for tracking async tasks."""
+
+    def __init__(self) -> None:
+        self._tasks: dict[str, TaskData] = {}
+        self._lock = asyncio.Lock()
+
+    async def create(self, task_id: str, data: TaskData) -> None:
+        async with self._lock:
+            self._tasks[task_id] = data
+
+    async def get(self, task_id: str) -> TaskData:
+        async with self._lock:
+            if task_id not in self._tasks:
+                raise TaskNotFoundError(task_id)
+            return self._tasks[task_id]
+
+    async def update_status(
+        self,
+        task_id: str,
+        status: str,
+        result: Any = None,
+        error: str | None = None,
+    ) -> None:
+        async with self._lock:
+            if task_id not in self._tasks:
+                raise TaskNotFoundError(task_id)
+            task = self._tasks[task_id]
+            task.status = status
+            task.result = result
+            task.error = error
+            task.updated_at = datetime.utcnow()
+
+
 async def _fetch_bytes(url: str, *, cookies: dict[str, str] | None, proxy: str | None) -> tuple[bytes, str]:
     async with AsyncClient(follow_redirects=True, cookies=cookies, proxy=proxy) as client:
         response = await client.get(url)
@@ -270,4 +320,7 @@ __all__ = [
     "SessionData",
     "SessionNotFoundError",
     "InvalidModelError",
+    "TaskStore",
+    "TaskData",
+    "TaskNotFoundError",
 ]

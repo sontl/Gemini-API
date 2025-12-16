@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import asyncio
+import secrets
+
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from httpx import HTTPError
+from httpx import AsyncClient, HTTPError
+from loguru import logger
 
 from ..client import GeminiClient
 from ..exceptions import (
@@ -19,13 +23,123 @@ from .models import (
     ConversationResponse,
     ContinueSessionRequest,
     StartSessionRequest,
+    StartSessionAsyncRequest,
+    TaskCreatedResponse,
+    TaskStatusResponse,
 )
 from .service import (
     ImageEditingService,
     InvalidModelError,
     SessionNotFoundError,
     SessionStore,
+    TaskStore,
+    TaskData,
+    TaskNotFoundError,
 )
+
+
+WEBHOOK_RETRY_ATTEMPTS = 3
+WEBHOOK_RETRY_DELAY_SECONDS = 2
+
+
+async def call_webhook(
+    webhook_url: str,
+    payload: dict,
+    max_retries: int = WEBHOOK_RETRY_ATTEMPTS,
+) -> bool:
+    """Call a webhook URL with the given payload.
+    
+    Retries up to max_retries times with exponential backoff.
+    Returns True if successful, False otherwise.
+    """
+    for attempt in range(max_retries):
+        try:
+            async with AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    webhook_url,
+                    json=payload,
+                    headers={"Content-Type": "application/json"},
+                )
+                if response.status_code < 400:
+                    logger.info(f"Webhook called successfully: {webhook_url}")
+                    return True
+                logger.warning(
+                    f"Webhook returned status {response.status_code}, "
+                    f"attempt {attempt + 1}/{max_retries}"
+                )
+        except Exception as e:
+            logger.warning(
+                f"Webhook call failed: {e}, attempt {attempt + 1}/{max_retries}"
+            )
+        
+        if attempt < max_retries - 1:
+            await asyncio.sleep(WEBHOOK_RETRY_DELAY_SECONDS * (2 ** attempt))
+    
+    logger.error(f"Failed to call webhook after {max_retries} attempts: {webhook_url}")
+    return False
+
+
+async def process_task_and_notify(
+    task_id: str,
+    task_store: TaskStore,
+    service: ImageEditingService,
+    request_data: dict,
+    webhook_url: str,
+) -> None:
+    """Process a session task in the background and notify via webhook."""
+    try:
+        await task_store.update_status(task_id, "processing")
+        
+        result = await service.start_session(
+            request_data["prompt"],
+            image_urls=request_data["image_urls"],
+            model=request_data.get("model"),
+            gem=request_data.get("gem"),
+        )
+        
+        await task_store.update_status(task_id, "completed", result=result)
+        
+        # Debug logging
+        logger.debug(f"Task {task_id} result type: {type(result)}")
+        logger.debug(f"Task {task_id} result images count: {len(result.images)}")
+        logger.debug(f"Task {task_id} result text: {result.text[:100] if result.text else 'empty'}")
+        
+        result_dict = result.model_dump()
+        logger.debug(f"Task {task_id} serialized images count: {len(result_dict.get('images', []))}")
+        
+        webhook_payload = {
+            "task_id": task_id,
+            "status": "completed",
+            "result": result_dict,
+        }
+        await call_webhook(webhook_url, webhook_payload)
+        
+    except (InvalidModelError, HTTPError, APIError, ImageGenerationError, 
+            TimeoutError, UsageLimitExceeded, TemporarilyBlocked, ModelInvalid) as exc:
+        error_message = str(exc)
+        logger.error(f"Task {task_id} failed: {error_message}")
+        
+        await task_store.update_status(task_id, "failed", error=error_message)
+        
+        webhook_payload = {
+            "task_id": task_id,
+            "status": "failed",
+            "error": error_message,
+        }
+        await call_webhook(webhook_url, webhook_payload)
+        
+    except Exception as exc:
+        error_message = f"Unexpected error: {exc}"
+        logger.exception(f"Task {task_id} failed with unexpected error")
+        
+        await task_store.update_status(task_id, "failed", error=error_message)
+        
+        webhook_payload = {
+            "task_id": task_id,
+            "status": "failed",
+            "error": error_message,
+        }
+        await call_webhook(webhook_url, webhook_payload)
 
 
 def create_app(service: ImageEditingService | None = None) -> FastAPI:
@@ -34,6 +148,7 @@ def create_app(service: ImageEditingService | None = None) -> FastAPI:
     app.state.service = service
     app.state.gemini_client = None
     app.state.session_store = None
+    app.state.task_store = TaskStore()
 
     async def get_service(request: Request) -> ImageEditingService:
         svc = request.app.state.service
@@ -78,6 +193,71 @@ def create_app(service: ImageEditingService | None = None) -> FastAPI:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Failed to fetch image: {exc}") from exc
         except (APIError, ImageGenerationError, TimeoutError, UsageLimitExceeded, TemporarilyBlocked, ModelInvalid) as exc:
             raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+
+    @app.post("/sessions/async", response_model=TaskCreatedResponse, status_code=status.HTTP_202_ACCEPTED)
+    async def start_session_async(
+        request: Request,
+        payload: StartSessionAsyncRequest,
+        service: ImageEditingService = Depends(get_service),
+    ) -> TaskCreatedResponse:
+        """Start a session asynchronously. Returns immediately with a task_id.
+        
+        The result will be sent to the provided webhook_url when processing completes.
+        """
+        task_id = secrets.token_urlsafe(16)
+        task_store: TaskStore = request.app.state.task_store
+        
+        task_data = TaskData(
+            status="pending",
+            request={
+                "prompt": payload.prompt,
+                "image_urls": [str(url) for url in payload.image_urls],
+                "model": payload.model,
+                "gem": payload.gem,
+            },
+            webhook_url=str(payload.webhook_url),
+        )
+        await task_store.create(task_id, task_data)
+        
+        # Use asyncio.create_task instead of BackgroundTasks for proper async execution
+        asyncio.create_task(
+            process_task_and_notify(
+                task_id=task_id,
+                task_store=task_store,
+                service=service,
+                request_data=task_data.request,
+                webhook_url=task_data.webhook_url,
+            )
+        )
+        
+        return TaskCreatedResponse(
+            task_id=task_id,
+            status="pending",
+            message="Task created successfully. Result will be sent to webhook URL.",
+        )
+
+    @app.get("/tasks/{task_id}", response_model=TaskStatusResponse)
+    async def get_task_status(
+        request: Request,
+        task_id: str,
+    ) -> TaskStatusResponse:
+        """Get the current status of an async task."""
+        task_store: TaskStore = request.app.state.task_store
+        try:
+            task = await task_store.get(task_id)
+            return TaskStatusResponse(
+                task_id=task_id,
+                status=task.status,
+                result=task.result,
+                error=task.error,
+                created_at=task.created_at.isoformat(),
+                updated_at=task.updated_at.isoformat(),
+            )
+        except TaskNotFoundError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Task {task_id} not found",
+            )
 
     @app.get("/healthz")
     async def health() -> dict[str, str]:
