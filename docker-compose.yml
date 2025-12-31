@@ -3,7 +3,7 @@ services:
     build: .
     container_name: gemini-image-api
     ports:
-      - "8000:8000"
+      - "8001:8000"
     environment:
       SECURE_1PSID: ${SECURE_1PSID}
       SECURE_1PSIDTS: ${SECURE_1PSIDTS:-}
