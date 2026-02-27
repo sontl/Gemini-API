@@ -12,7 +12,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
 
-from httpx import AsyncClient, HTTPError
+from httpx import AsyncClient, HTTPError, HTTPStatusError
+from loguru import logger
 
 from ..client import GeminiClient, ChatSession
 from ..constants import Model
@@ -119,10 +120,12 @@ class TaskStore:
 
 
 async def _fetch_bytes(url: str, *, cookies: dict[str, str] | None, proxy: str | None) -> tuple[bytes, str]:
+    logger.debug(f"[_fetch_bytes] Fetching url={url}")
     async with AsyncClient(http2=True, follow_redirects=True, cookies=cookies, proxy=proxy) as client:
         response = await client.get(url)
         response.raise_for_status()
         mime = response.headers.get("content-type", "application/octet-stream")
+        logger.debug(f"[_fetch_bytes] Success url={url} | status={response.status_code} | mime={mime} | size={len(response.content)} bytes")
         return response.content, mime
 
 
@@ -136,8 +139,10 @@ async def _files_from_urls(urls: Sequence[str], *, proxy: str | None) -> AsyncIt
         dest = Path(tmp_dir)
         async with AsyncClient(follow_redirects=True, proxy=proxy) as client:
             async def _download(url: str) -> str:
+                logger.info(f"[_files_from_urls] Downloading input image: {url}")
                 response = await client.get(url)
                 response.raise_for_status()
+                logger.info(f"[_files_from_urls] Downloaded: {url} | status={response.status_code} | size={len(response.content)} bytes")
                 filename = Path(url.split("?")[0]).name or "image"
                 target = dest / filename
                 suffix = 0
@@ -149,7 +154,18 @@ async def _files_from_urls(urls: Sequence[str], *, proxy: str | None) -> AsyncIt
 
             try:
                 files = await asyncio.gather(*(_download(url) for url in urls))
-            except HTTPError:
+            except HTTPStatusError as exc:
+                logger.error(
+                    f"[_files_from_urls] Failed to download input image | "
+                    f"status={exc.response.status_code} | url={exc.request.url} | "
+                    f"body={exc.response.text[:500]}"
+                )
+                raise
+            except HTTPError as exc:
+                logger.error(
+                    f"[_files_from_urls] Failed to download input image | "
+                    f"{type(exc).__name__}: {exc}"
+                )
                 raise
 
         yield files
@@ -272,9 +288,18 @@ class ImageEditingService:
         if not prompt:
             raise ValueError("prompt cannot be empty")
 
+        logger.info(f"[_send] Step 1/3: Downloading {len(image_urls)} input image(s)...")
         async with _files_from_urls(image_urls, proxy=self._client.proxy) as files:
+            logger.info(f"[_send] Step 2/3: Sending prompt to Gemini (files={len(files)})...")
             output = await chat.send_message(prompt, files=files or None)
 
+        logger.info(
+            f"[_send] Gemini responded | text_length={len(output.text)} | "
+            f"images_count={len(output.images)} | "
+            f"image_types={[type(img).__name__ for img in output.images]}"
+        )
+
+        logger.info(f"[_send] Step 3/3: Serializing {len(output.images)} image(s)...")
         images = await _serialize_images(
             output.images,
             proxy=self._client.proxy,
@@ -300,6 +325,7 @@ class ImageEditingService:
                 else:
                     image.url = f"/images/{relative.as_posix()}"
 
+        logger.info(f"[_send] All steps complete | session_id={session_id} | images_serialized={len(images)}")
         return ConversationResponse(
             session_id=session_id or self._generate_session_id(),
             text=output.text,
