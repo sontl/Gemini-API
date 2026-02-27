@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import secrets
+import time
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse
@@ -12,6 +13,7 @@ from loguru import logger
 from ..client import GeminiClient
 from ..exceptions import (
     APIError,
+    GeminiError,
     ImageGenerationError,
     ModelInvalid,
     TimeoutError,
@@ -114,7 +116,7 @@ async def process_task_and_notify(
         }
         await call_webhook(webhook_url, webhook_payload)
         
-    except (InvalidModelError, HTTPError, APIError, ImageGenerationError, 
+    except (InvalidModelError, HTTPError, APIError, GeminiError, ImageGenerationError, 
             TimeoutError, UsageLimitExceeded, TemporarilyBlocked, ModelInvalid) as exc:
         error_message = str(exc)
         logger.error(f"Task {task_id} failed: {error_message}")
@@ -142,6 +144,40 @@ async def process_task_and_notify(
         await call_webhook(webhook_url, webhook_payload)
 
 
+def _log_response(endpoint: str, response: ConversationResponse, elapsed: float) -> None:
+    """Log detailed response information returned to client."""
+    image_urls = [img.url for img in response.images] if response.images else []
+    logger.info(
+        f"[{endpoint}] Response sent | "
+        f"session_id={response.session_id} | "
+        f"elapsed={elapsed:.2f}s | "
+        f"text_length={len(response.text) if response.text else 0} | "
+        f"images_count={len(response.images)} | "
+        f"has_thoughts={response.thoughts is not None}"
+    )
+    if response.text:
+        logger.info(
+            f"[{endpoint}] Response text preview: "
+            f"{response.text[:200]}{'...' if len(response.text) > 200 else ''}"
+        )
+    if response.images:
+        for i, img in enumerate(response.images):
+            logger.info(
+                f"[{endpoint}] Image {i+1}/{len(response.images)}: "
+                f"title={img.title!r} | alt={img.alt!r} | "
+                f"mime={img.mime_type} | url={img.url} | "
+                f"data_size={len(img.data) if img.data else 0} bytes (base64)"
+            )
+    if response.thoughts:
+        logger.debug(
+            f"[{endpoint}] Thoughts: "
+            f"{response.thoughts[:300]}{'...' if len(response.thoughts) > 300 else ''}"
+        )
+    logger.info(
+        f"[{endpoint}] Metadata: {response.metadata}"
+    )
+
+
 def create_app(service: ImageEditingService | None = None) -> FastAPI:
     app = FastAPI(title="Gemini Image Editing API", version="1.0.0")
 
@@ -161,18 +197,34 @@ def create_app(service: ImageEditingService | None = None) -> FastAPI:
         payload: StartSessionRequest,
         service: ImageEditingService = Depends(get_service),
     ) -> ConversationResponse:
+        logger.info(
+            f"[POST /sessions] Request received | "
+            f"prompt={payload.prompt[:100]!r} | "
+            f"image_urls={[str(u) for u in payload.image_urls]} | "
+            f"model={payload.model} | gem={payload.gem}"
+        )
+        t0 = time.monotonic()
         try:
-            return await service.start_session(
+            result = await service.start_session(
                 payload.prompt,
                 image_urls=[str(url) for url in payload.image_urls],
                 model=payload.model,
                 gem=payload.gem,
             )
+            elapsed = time.monotonic() - t0
+            _log_response("POST /sessions", result, elapsed)
+            return result
         except InvalidModelError as exc:
+            elapsed = time.monotonic() - t0
+            logger.error(f"[POST /sessions] InvalidModelError after {elapsed:.2f}s: {exc}")
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid model: {exc.args[0]}") from exc
         except HTTPError as exc:
+            elapsed = time.monotonic() - t0
+            logger.error(f"[POST /sessions] HTTPError after {elapsed:.2f}s: {exc}")
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Failed to fetch image: {exc}") from exc
-        except (APIError, ImageGenerationError, TimeoutError, UsageLimitExceeded, TemporarilyBlocked, ModelInvalid) as exc:
+        except (APIError, GeminiError, ImageGenerationError, TimeoutError, UsageLimitExceeded, TemporarilyBlocked, ModelInvalid) as exc:
+            elapsed = time.monotonic() - t0
+            logger.error(f"[POST /sessions] API error after {elapsed:.2f}s: {type(exc).__name__}: {exc}")
             raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
 
     @app.post("/sessions/{session_id}/messages", response_model=ConversationResponse)
@@ -181,17 +233,32 @@ def create_app(service: ImageEditingService | None = None) -> FastAPI:
         payload: ContinueSessionRequest,
         service: ImageEditingService = Depends(get_service),
     ) -> ConversationResponse:
+        logger.info(
+            f"[POST /sessions/{session_id}/messages] Request received | "
+            f"prompt={payload.prompt[:100]!r} | "
+            f"image_urls={[str(u) for u in payload.image_urls]}"
+        )
+        t0 = time.monotonic()
         try:
-            return await service.continue_session(
+            result = await service.continue_session(
                 session_id,
                 prompt=payload.prompt,
                 image_urls=[str(url) for url in payload.image_urls],
             )
+            elapsed = time.monotonic() - t0
+            _log_response(f"POST /sessions/{session_id}/messages", result, elapsed)
+            return result
         except SessionNotFoundError as exc:
+            elapsed = time.monotonic() - t0
+            logger.error(f"[POST /sessions/{session_id}/messages] SessionNotFoundError after {elapsed:.2f}s: {exc}")
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Session {exc.args[0]} not found") from exc
         except HTTPError as exc:
+            elapsed = time.monotonic() - t0
+            logger.error(f"[POST /sessions/{session_id}/messages] HTTPError after {elapsed:.2f}s: {exc}")
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Failed to fetch image: {exc}") from exc
-        except (APIError, ImageGenerationError, TimeoutError, UsageLimitExceeded, TemporarilyBlocked, ModelInvalid) as exc:
+        except (APIError, GeminiError, ImageGenerationError, TimeoutError, UsageLimitExceeded, TemporarilyBlocked, ModelInvalid) as exc:
+            elapsed = time.monotonic() - t0
+            logger.error(f"[POST /sessions/{session_id}/messages] API error after {elapsed:.2f}s: {type(exc).__name__}: {exc}")
             raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
 
     @app.post("/sessions/async", response_model=TaskCreatedResponse, status_code=status.HTTP_202_ACCEPTED)
@@ -204,6 +271,13 @@ def create_app(service: ImageEditingService | None = None) -> FastAPI:
         
         The result will be sent to the provided webhook_url when processing completes.
         """
+        logger.info(
+            f"[POST /sessions/async] Request received | "
+            f"prompt={payload.prompt[:100]!r} | "
+            f"image_urls={[str(u) for u in payload.image_urls]} | "
+            f"model={payload.model} | gem={payload.gem} | "
+            f"webhook_url={payload.webhook_url}"
+        )
         task_id = secrets.token_urlsafe(16)
         task_store: TaskStore = request.app.state.task_store
         
@@ -230,11 +304,16 @@ def create_app(service: ImageEditingService | None = None) -> FastAPI:
             )
         )
         
-        return TaskCreatedResponse(
+        response = TaskCreatedResponse(
             task_id=task_id,
             status="pending",
             message="Task created successfully. Result will be sent to webhook URL.",
         )
+        logger.info(
+            f"[POST /sessions/async] Task created | "
+            f"task_id={task_id} | status=pending"
+        )
+        return response
 
     @app.get("/tasks/{task_id}", response_model=TaskStatusResponse)
     async def get_task_status(
@@ -242,10 +321,11 @@ def create_app(service: ImageEditingService | None = None) -> FastAPI:
         task_id: str,
     ) -> TaskStatusResponse:
         """Get the current status of an async task."""
+        logger.info(f"[GET /tasks/{task_id}] Request received")
         task_store: TaskStore = request.app.state.task_store
         try:
             task = await task_store.get(task_id)
-            return TaskStatusResponse(
+            response = TaskStatusResponse(
                 task_id=task_id,
                 status=task.status,
                 result=task.result,
@@ -253,7 +333,23 @@ def create_app(service: ImageEditingService | None = None) -> FastAPI:
                 created_at=task.created_at.isoformat(),
                 updated_at=task.updated_at.isoformat(),
             )
+            logger.info(
+                f"[GET /tasks/{task_id}] Response sent | "
+                f"status={task.status} | "
+                f"has_result={task.result is not None} | "
+                f"error={task.error!r} | "
+                f"created_at={task.created_at.isoformat()} | "
+                f"updated_at={task.updated_at.isoformat()}"
+            )
+            if task.result is not None and hasattr(task.result, 'images'):
+                logger.info(
+                    f"[GET /tasks/{task_id}] Result details | "
+                    f"text_length={len(task.result.text) if task.result.text else 0} | "
+                    f"images_count={len(task.result.images)}"
+                )
+            return response
         except TaskNotFoundError:
+            logger.warning(f"[GET /tasks/{task_id}] Task not found")
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Task {task_id} not found",

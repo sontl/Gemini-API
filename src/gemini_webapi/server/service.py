@@ -119,7 +119,7 @@ class TaskStore:
 
 
 async def _fetch_bytes(url: str, *, cookies: dict[str, str] | None, proxy: str | None) -> tuple[bytes, str]:
-    async with AsyncClient(follow_redirects=True, cookies=cookies, proxy=proxy) as client:
+    async with AsyncClient(http2=True, follow_redirects=True, cookies=cookies, proxy=proxy) as client:
         response = await client.get(url)
         response.raise_for_status()
         mime = response.headers.get("content-type", "application/octet-stream")
