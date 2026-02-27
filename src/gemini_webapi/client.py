@@ -737,60 +737,103 @@ class GeminiClient(GemMixin):
                                             get_nested_value(candidate_data, [37, 0, 0])
                                             or ""
                                         )
-                                        # Image handling
+                                        # Image handling - support both old list format and new dict format
                                         web_images = []
-                                        for web_img_data in get_nested_value(
-                                            candidate_data, [12, 1], []
-                                        ):
-                                            url = get_nested_value(
-                                                web_img_data, [0, 0, 0]
-                                            )
-                                            if url:
-                                                web_images.append(
-                                                    WebImage(
-                                                        url=url,
-                                                        title=get_nested_value(
-                                                            web_img_data, [7, 0], ""
-                                                        ),
-                                                        alt=get_nested_value(
-                                                            web_img_data, [0, 4], ""
-                                                        ),
-                                                        proxy=self.proxy,
-                                                    )
-                                                )
-
                                         generated_images = []
-                                        gen_img_container = get_nested_value(
-                                            candidate_data, [12, 7, 0], []
-                                        )
-                                        for gen_img_data in gen_img_container:
-                                            url = get_nested_value(
-                                                gen_img_data, [0, 3, 3]
+                                        candidate_12 = get_nested_value(candidate_data, [12])
+
+                                        # Detect new dict-based format: candidate_data[12] = [{'7': status, '8': images, ...}]
+                                        if (
+                                            isinstance(candidate_12, list)
+                                            and len(candidate_12) > 0
+                                            and isinstance(candidate_12[0], dict)
+                                        ):
+                                            img_dict = candidate_12[0]
+                                            logger.debug(
+                                                f"[_process_parts] New dict format detected | "
+                                                f"keys={list(img_dict.keys())} | "
+                                                f"status(key '7')={img_dict.get('7')}"
                                             )
-                                            if url:
-                                                img_num = get_nested_value(
-                                                    gen_img_data, [3, 6]
-                                                )
-                                                generated_images.append(
-                                                    GeneratedImage(
-                                                        url=url,
-                                                        title=(
-                                                            f"[Generated Image {img_num}]"
-                                                            if img_num
-                                                            else "[Generated Image]"
-                                                        ),
-                                                        alt=get_nested_value(
-                                                            gen_img_data, [3, 5, 0], ""
-                                                        ),
-                                                        proxy=self.proxy,
-                                                        cookies=self.cookies,
+
+                                            # Generated images are in key '8'
+                                            gen_img_outer = img_dict.get('8', [])
+                                            if gen_img_outer and isinstance(gen_img_outer, list) and len(gen_img_outer) > 0:
+                                                # gen_img_outer[0] is the list of gen_img_data items (same as old [7][0])
+                                                for gen_img_data in gen_img_outer[0]:
+                                                    url = get_nested_value(gen_img_data, [0, 3, 3])
+                                                    if url:
+                                                        img_num = get_nested_value(gen_img_data, [3, 6])
+                                                        generated_images.append(
+                                                            GeneratedImage(
+                                                                url=url,
+                                                                title=(
+                                                                    f"[Generated Image {img_num}]"
+                                                                    if img_num
+                                                                    else "[Generated Image]"
+                                                                ),
+                                                                alt=get_nested_value(
+                                                                    gen_img_data, [3, 5, 0], ""
+                                                                ),
+                                                                proxy=self.proxy,
+                                                                cookies=self.cookies,
+                                                            )
+                                                        )
+
+                                            # Web images may also be in the dict (try key '1' for web images)
+                                            web_img_list = img_dict.get('1', [])
+                                            if web_img_list and isinstance(web_img_list, list):
+                                                for web_img_data in web_img_list:
+                                                    url = get_nested_value(web_img_data, [0, 0, 0])
+                                                    if url:
+                                                        web_images.append(
+                                                            WebImage(
+                                                                url=url,
+                                                                title=get_nested_value(web_img_data, [7, 0], ""),
+                                                                alt=get_nested_value(web_img_data, [0, 4], ""),
+                                                                proxy=self.proxy,
+                                                            )
+                                                        )
+                                        else:
+                                            # Old list-based format: candidate_data[12][1] = web, [12][7][0] = generated
+                                            for web_img_data in get_nested_value(
+                                                candidate_data, [12, 1], []
+                                            ):
+                                                url = get_nested_value(web_img_data, [0, 0, 0])
+                                                if url:
+                                                    web_images.append(
+                                                        WebImage(
+                                                            url=url,
+                                                            title=get_nested_value(web_img_data, [7, 0], ""),
+                                                            alt=get_nested_value(web_img_data, [0, 4], ""),
+                                                            proxy=self.proxy,
+                                                        )
                                                     )
-                                                )
+
+                                            gen_img_container = get_nested_value(
+                                                candidate_data, [12, 7, 0], []
+                                            )
+                                            for gen_img_data in gen_img_container:
+                                                url = get_nested_value(gen_img_data, [0, 3, 3])
+                                                if url:
+                                                    img_num = get_nested_value(gen_img_data, [3, 6])
+                                                    generated_images.append(
+                                                        GeneratedImage(
+                                                            url=url,
+                                                            title=(
+                                                                f"[Generated Image {img_num}]"
+                                                                if img_num
+                                                                else "[Generated Image]"
+                                                            ),
+                                                            alt=get_nested_value(
+                                                                gen_img_data, [3, 5, 0], ""
+                                                            ),
+                                                            proxy=self.proxy,
+                                                            cookies=self.cookies,
+                                                        )
+                                                    )
 
                                         # Debug: log candidate parsing results
-                                        candidate_12 = get_nested_value(candidate_data, [12])
                                         if not web_images and not generated_images:
-                                            # No images found - dump structure to debug
                                             logger.debug(
                                                 f"[_process_parts] Candidate {i} rcid={rcid}: "
                                                 f"text_len={len(text)} | thoughts_len={len(thoughts)} | "
@@ -801,7 +844,7 @@ class GeminiClient(GemMixin):
                                             if isinstance(candidate_12, list) and len(candidate_12) > 0:
                                                 for idx, sub in enumerate(candidate_12):
                                                     if sub is not None:
-                                                        sub_repr = repr(sub)[:300]
+                                                        sub_repr = repr(sub)[:500]
                                                         logger.debug(
                                                             f"[_process_parts] candidate_data[12][{idx}] = {sub_repr}"
                                                         )
