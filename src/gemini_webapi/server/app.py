@@ -7,7 +7,7 @@ import time
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from httpx import AsyncClient, HTTPError
+from httpx import AsyncClient, HTTPError, HTTPStatusError
 from loguru import logger
 
 from ..client import GeminiClient
@@ -42,6 +42,22 @@ from .service import (
 
 WEBHOOK_RETRY_ATTEMPTS = 3
 WEBHOOK_RETRY_DELAY_SECONDS = 2
+
+
+def _format_http_error(exc: HTTPError) -> str:
+    """Extract detailed information from an httpx HTTPError."""
+    if isinstance(exc, HTTPStatusError):
+        try:
+            body_preview = exc.response.text[:500]
+        except Exception:
+            body_preview = "<unable to read body>"
+        return (
+            f"HTTPStatusError: {exc.response.status_code} {exc.response.reason_phrase} | "
+            f"url={exc.request.url} | "
+            f"body={body_preview}"
+        )
+    # For other HTTPError subclasses (ConnectError, ReadTimeout, etc.)
+    return f"{type(exc).__name__}: {exc} | request_url={getattr(exc, 'request', {}).url if hasattr(getattr(exc, 'request', None), 'url') else 'unknown'}"
 
 
 async def call_webhook(
@@ -220,8 +236,9 @@ def create_app(service: ImageEditingService | None = None) -> FastAPI:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid model: {exc.args[0]}") from exc
         except HTTPError as exc:
             elapsed = time.monotonic() - t0
-            logger.error(f"[POST /sessions] HTTPError after {elapsed:.2f}s: {exc}")
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Failed to fetch image: {exc}") from exc
+            error_detail = _format_http_error(exc)
+            logger.error(f"[POST /sessions] HTTPError after {elapsed:.2f}s: {error_detail}")
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Failed to fetch image: {error_detail}") from exc
         except (APIError, GeminiError, ImageGenerationError, TimeoutError, UsageLimitExceeded, TemporarilyBlocked, ModelInvalid) as exc:
             elapsed = time.monotonic() - t0
             logger.error(f"[POST /sessions] API error after {elapsed:.2f}s: {type(exc).__name__}: {exc}")
@@ -254,8 +271,9 @@ def create_app(service: ImageEditingService | None = None) -> FastAPI:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Session {exc.args[0]} not found") from exc
         except HTTPError as exc:
             elapsed = time.monotonic() - t0
-            logger.error(f"[POST /sessions/{session_id}/messages] HTTPError after {elapsed:.2f}s: {exc}")
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Failed to fetch image: {exc}") from exc
+            error_detail = _format_http_error(exc)
+            logger.error(f"[POST /sessions/{session_id}/messages] HTTPError after {elapsed:.2f}s: {error_detail}")
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Failed to fetch image: {error_detail}") from exc
         except (APIError, GeminiError, ImageGenerationError, TimeoutError, UsageLimitExceeded, TemporarilyBlocked, ModelInvalid) as exc:
             elapsed = time.monotonic() - t0
             logger.error(f"[POST /sessions/{session_id}/messages] API error after {elapsed:.2f}s: {type(exc).__name__}: {exc}")
