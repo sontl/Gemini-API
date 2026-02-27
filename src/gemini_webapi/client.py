@@ -700,6 +700,9 @@ class GeminiClient(GemMixin):
 
                                 candidates_list = get_nested_value(part_json, [4], [])
                                 if candidates_list:
+                                    logger.debug(
+                                        f"[_process_parts] Found {len(candidates_list)} candidate(s)"
+                                    )
                                     output_candidates = []
                                     for i, candidate_data in enumerate(candidates_list):
                                         rcid = get_nested_value(candidate_data, [0])
@@ -757,9 +760,10 @@ class GeminiClient(GemMixin):
                                                 )
 
                                         generated_images = []
-                                        for gen_img_data in get_nested_value(
+                                        gen_img_container = get_nested_value(
                                             candidate_data, [12, 7, 0], []
-                                        ):
+                                        )
+                                        for gen_img_data in gen_img_container:
                                             url = get_nested_value(
                                                 gen_img_data, [0, 3, 3]
                                             )
@@ -782,6 +786,31 @@ class GeminiClient(GemMixin):
                                                         cookies=self.cookies,
                                                     )
                                                 )
+
+                                        # Debug: log candidate parsing results
+                                        candidate_12 = get_nested_value(candidate_data, [12])
+                                        if not web_images and not generated_images:
+                                            # No images found - dump structure to debug
+                                            logger.debug(
+                                                f"[_process_parts] Candidate {i} rcid={rcid}: "
+                                                f"text_len={len(text)} | thoughts_len={len(thoughts)} | "
+                                                f"web_images=0 | generated_images=0 | "
+                                                f"candidate_data[12] type={type(candidate_12).__name__} | "
+                                                f"candidate_data[12] keys/len={len(candidate_12) if isinstance(candidate_12, (list, dict)) else 'N/A'}"
+                                            )
+                                            if isinstance(candidate_12, list) and len(candidate_12) > 0:
+                                                for idx, sub in enumerate(candidate_12):
+                                                    if sub is not None:
+                                                        sub_repr = repr(sub)[:300]
+                                                        logger.debug(
+                                                            f"[_process_parts] candidate_data[12][{idx}] = {sub_repr}"
+                                                        )
+                                        else:
+                                            logger.debug(
+                                                f"[_process_parts] Candidate {i} rcid={rcid}: "
+                                                f"text_len={len(text)} | web_images={len(web_images)} | "
+                                                f"generated_images={len(generated_images)}"
+                                            )
 
                                         # Determine if this frame represents the final state of the message
                                         is_final_chunk = (
